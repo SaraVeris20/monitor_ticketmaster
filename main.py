@@ -5,7 +5,6 @@ import re
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -140,12 +139,11 @@ options.add_argument(
 )
 options.add_experimental_option("excludeSwitches", ["enable-automation"])
 options.add_experimental_option("useAutomationExtension", False)
-
-# Aponta para o Chrome instalado pelo Docker
 options.binary_location = "/usr/bin/chromium"
 
+# ✅ Usa o chromedriver instalado pelo Docker
 driver = webdriver.Chrome(
-    service=Service(ChromeDriverManager().install()),
+    service=Service("/usr/bin/chromedriver"),
     options=options
 )
 
@@ -221,6 +219,11 @@ while True:
             print("⚠️  Status incerto — página pode estar carregando ou com layout diferente.")
 
         status_anterior = status_atual
+        time.sleep(INTERVALO)
+
+    except Exception as e:
+        print(f"[{time.strftime('%H:%M:%S')}] Erro: {e}")
+        enviar(f"⚠️ Erro no monitor: {e}\nTentando continuar...")
         time.sleep(INTERVALO)
 
     except Exception as e:

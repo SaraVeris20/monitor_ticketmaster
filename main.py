@@ -1,8 +1,7 @@
 import time
 import requests
-import os
 import re
-from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 
 # =========================
 # CONFIGURAÇÕES
@@ -13,7 +12,17 @@ URL = "https://www.ticketmaster.com.br/event/venda-geral-bts-world-tour-arirang-
 TELEGRAM_TOKEN = "8789223090:AAEcikuI7VWkIWIAj8VzqRDz8iTwQx-U1TY"
 CHAT_ID = "1473082339"
 
-INTERVALO = 25  # segundos entre verificações
+INTERVALO = 30  # segundos entre verificações
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
 # =========================
 # PALAVRAS-CHAVE
@@ -64,21 +73,19 @@ def enviar(msg):
         print(f"Erro ao enviar Telegram: {e}")
 
 # =========================
-# DETECTAR BLOQUEIO
+# BUSCAR PÁGINA
 # =========================
 
-def verificar_bloqueio(texto, url_atual):
-    if URL not in url_atual:
-        return f"Redirecionado para: {url_atual}"
-
-    for palavra in PALAVRAS_BLOQUEIO:
-        if palavra in texto:
-            return f"Bloqueio detectado: '{palavra}'"
-
-    if len(texto.strip()) < 200:
-        return f"Página suspeita (muito curta: {len(texto)} caracteres)"
-
-    return None
+def buscar_pagina():
+    try:
+        response = requests.get(URL, headers=HEADERS, timeout=20)
+        soup = BeautifulSoup(response.text, "html.parser")
+        texto = soup.get_text(separator=" ").lower()
+        texto = re.sub(r'\s+', ' ', texto).strip()
+        return texto, response.status_code
+    except Exception as e:
+        print(f"Erro ao buscar página: {e}")
+        return None, None
 
 # =========================
 # CHECAR DISPONIBILIDADE
@@ -95,100 +102,85 @@ def checar_disponibilidade(texto):
     else:
         return "incerto"
 
+def verificar_bloqueio(texto, status_code):
+    if status_code in [403, 429, 503]:
+        return f"HTTP {status_code} — acesso bloqueado"
+    if texto:
+        for palavra in PALAVRAS_BLOQUEIO:
+            if palavra in texto:
+                return f"Bloqueio detectado: '{palavra}'"
+        if len(texto.strip()) < 200:
+            return f"Página suspeita (muito curta: {len(texto)} caracteres)"
+    return None
+
+# =========================
+# INICIAR
+# =========================
+
+print("🌐 Iniciando monitor...")
+enviar(f"🤖 Monitor iniciado!\n🔗 {URL}")
+
+texto_inicial, status = buscar_pagina()
+
+if texto_inicial:
+    status_anterior = checar_disponibilidade(texto_inicial)
+else:
+    status_anterior = "incerto"
+
+print(f"✅ Status inicial: {status_anterior.upper()}")
+enviar(f"Status atual: {status_anterior.upper()}")
+
 # =========================
 # LOOP PRINCIPAL
 # =========================
 
-def main():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-blink-features=AutomationControlled",
-            ]
-        )
+while True:
+    try:
+        time.sleep(INTERVALO)
 
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
+        texto_atual, status_code = buscar_pagina()
+
+        if texto_atual is None:
+            print(f"[{time.strftime('%H:%M:%S')}] Falha ao buscar página, tentando novamente...")
+            continue
+
+        # --- Checa bloqueio ---
+        bloqueio = verificar_bloqueio(texto_atual, status_code)
+        if bloqueio:
+            print(f"🚫 [{time.strftime('%H:%M:%S')}] {bloqueio}")
+            enviar(
+                f"🚫 MONITOR BLOQUEADO!\n"
+                f"Motivo: {bloqueio}\n"
+                f"Aguardando 5 minutos antes de tentar novamente..."
             )
-        )
+            time.sleep(300)
+            continue
 
-        page = context.new_page()
+        # --- Analisa disponibilidade ---
+        status_atual = checar_disponibilidade(texto_atual)
+        print(f"[{time.strftime('%H:%M:%S')}] Status: {status_atual.upper()}")
 
-        # Disfarça o playwright
-        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        # 🎟️ Ingressos disponíveis!
+        if status_atual == "disponivel" and status_anterior != "disponivel":
+            msg = (
+                "🎟️🚨 INGRESSOS DISPONÍVEIS!\n"
+                f"🔗 Corra: {URL}\n"
+                "⚡ Compre agora antes que esgotem!"
+            )
+            print("🚨 " + msg)
+            enviar(msg)
 
-        print("🌐 Abrindo página...")
-        page.goto(URL, timeout=30000)
-        page.wait_for_timeout(12000)
+        # 😔 Voltou a esgotar
+        elif status_atual == "esgotado" and status_anterior == "disponivel":
+            enviar("😔 Ingressos esgotaram novamente. Continuando monitoramento...")
 
-        texto_inicial = re.sub(r'\s+', ' ', page.inner_text("body").lower()).strip()
-        status_anterior = checar_disponibilidade(texto_inicial)
+        # ⚠️ Status incerto
+        elif status_atual == "incerto":
+            print("⚠️  Status incerto — verificando na próxima rodada.")
 
-        print(f"✅ Monitor iniciado | Status inicial: {status_anterior.upper()}")
-        enviar(
-            f"🤖 Monitor iniciado!\n"
-            f"Status atual: {status_anterior.upper()}\n"
-            f"🔗 {URL}"
-        )
+        status_anterior = status_atual
 
-        while True:
-            try:
-                page.reload(timeout=30000)
-                page.wait_for_timeout(10000)
-
-                texto_atual = re.sub(r'\s+', ' ', page.inner_text("body").lower()).strip()
-                url_atual = page.url
-
-                # --- Checa bloqueio ---
-                bloqueio = verificar_bloqueio(texto_atual, url_atual)
-                if bloqueio:
-                    print(f"🚫 [{time.strftime('%H:%M:%S')}] {bloqueio}")
-                    enviar(
-                        f"🚫 MONITOR BLOQUEADO!\n"
-                        f"Motivo: {bloqueio}\n"
-                        f"Aguardando 5 minutos antes de tentar novamente..."
-                    )
-                    time.sleep(300)
-                    page.goto(URL, timeout=30000)
-                    page.wait_for_timeout(15000)
-                    continue
-
-                # --- Analisa disponibilidade ---
-                status_atual = checar_disponibilidade(texto_atual)
-
-                print(f"[{time.strftime('%H:%M:%S')}] Status: {status_atual.upper()}")
-
-                # 🎟️ Ingressos disponíveis!
-                if status_atual == "disponivel" and status_anterior != "disponivel":
-                    msg = (
-                        "🎟️🚨 INGRESSOS DISPONÍVEIS!\n"
-                        f"🔗 Corra: {URL}\n"
-                        "⚡ Compre agora antes que esgotem!"
-                    )
-                    print("🚨 " + msg)
-                    enviar(msg)
-
-                # 😔 Voltou a esgotar
-                elif status_atual == "esgotado" and status_anterior == "disponivel":
-                    enviar("😔 Ingressos esgotaram novamente. Continuando monitoramento...")
-
-                # ⚠️ Status incerto
-                elif status_atual == "incerto":
-                    print("⚠️  Status incerto — página pode estar carregando ou com layout diferente.")
-
-                status_anterior = status_atual
-                time.sleep(INTERVALO)
-
-            except Exception as e:
-                print(f"[{time.strftime('%H:%M:%S')}] Erro: {e}")
-                enviar(f"⚠️ Erro no monitor: {e}\nTentando continuar...")
-                time.sleep(INTERVALO)
-
-main()
+    except Exception as e:
+        print(f"[{time.strftime('%H:%M:%S')}] Erro: {e}")
+        enviar(f"⚠️ Erro no monitor: {e}\nTentando continuar...")
+        time.sleep(INTERVALO)

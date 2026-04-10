@@ -29,23 +29,14 @@ HEADERS = {
 # =========================
 
 PALAVRAS_DISPONIVEL = [
-    "comprar",
-    "adicionar ao carrinho",
-    "selecionar ingresso",
-    "buy",
-    "add to cart",
-    "compre agora",
-    "escolha seu ingresso",
+    "ingressos",
 ]
 
 PALAVRAS_ESGOTADO = [
     "esgotado",
     "sold out",
+    "encerrado",
     "indisponível",
-    "unavailable",
-    "em breve",
-    "coming soon",
-    "lista de espera",
 ]
 
 PALAVRAS_BLOQUEIO = [
@@ -92,15 +83,16 @@ def buscar_pagina():
 # =========================
 
 def checar_disponibilidade(texto):
-    tem_disponivel = any(p in texto for p in PALAVRAS_DISPONIVEL)
-    tem_esgotado   = any(p in texto for p in PALAVRAS_ESGOTADO)
+    tem_esgotado = any(p in texto for p in PALAVRAS_ESGOTADO)
 
-    if tem_disponivel and not tem_esgotado:
-        return "disponivel"
-    elif tem_esgotado:
+    if tem_esgotado:
         return "esgotado"
-    else:
-        return "incerto"
+
+    tem_disponivel = any(p in texto for p in PALAVRAS_DISPONIVEL)
+    if tem_disponivel:
+        return "disponivel"
+
+    return "incerto"
 
 def verificar_bloqueio(texto, status_code):
     if status_code in [403, 429, 503]:

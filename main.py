@@ -13,10 +13,9 @@ URL = "https://www.ticketmaster.com.br/event/venda-geral-bts-world-tour-arirang-
 TELEGRAM_TOKEN = "8789223090:AAEcikuI7VWkIWIAj8VzqRDz8iTwQx-U1TY"
 CHAT_ID = "1473082339"
 
-INTERVALO_MIN = 25  # segundos mínimos entre verificações
-INTERVALO_MAX = 45  # segundos máximos entre verificações (variação aleatória)
+INTERVALO_MIN = 40
+INTERVALO_MAX = 70
 
-# Lista de User-Agents para rotacionar
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -29,28 +28,11 @@ USER_AGENTS = [
 # PALAVRAS-CHAVE
 # =========================
 
-PALAVRAS_DISPONIVEL = [
-    "ingressos",
-]
-
 PALAVRAS_ESGOTADO = [
     "esgotado",
     "sold out",
     "encerrado",
     "indisponível",
-]
-
-PALAVRAS_BLOQUEIO = [
-    "access denied",
-    "too many requests",
-    "captcha",
-    "bot detected",
-    "are you human",
-    "blocked",
-    "unusual traffic",
-    "verify you are human",
-    "cloudflare",
-    "ray id",
 ]
 
 # =========================
@@ -70,7 +52,6 @@ def enviar(msg):
 
 def buscar_pagina():
     try:
-        # Rotaciona User-Agent a cada requisição
         headers = {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -83,11 +64,9 @@ def buscar_pagina():
         }
 
         session = requests.Session()
-        # Primeira visita à home para pegar cookies (simula navegação humana)
         session.get("https://www.ticketmaster.com.br", headers=headers, timeout=20)
-        time.sleep(random.uniform(2, 5))
+        time.sleep(random.uniform(3, 7))
 
-        # Agora acessa a página do evento
         response = session.get(URL, headers=headers, timeout=20)
         soup = BeautifulSoup(response.text, "html.parser")
         texto = soup.get_text(separator=" ").lower()
@@ -103,44 +82,26 @@ def buscar_pagina():
 # =========================
 
 def checar_disponibilidade(texto):
-    tem_esgotado = any(p in texto for p in PALAVRAS_ESGOTADO)
-
-    if tem_esgotado:
+    # Se tiver qualquer palavra de esgotado → esgotado
+    if any(p in texto for p in PALAVRAS_ESGOTADO):
         return "esgotado"
 
-    tem_disponivel = any(p in texto for p in PALAVRAS_DISPONIVEL)
-    if tem_disponivel:
+    # Se tiver "ingressos" sem nenhuma palavra de esgotado → disponível
+    if "ingressos" in texto:
         return "disponivel"
 
+    # Não foi possível determinar
     return "incerto"
-
-def verificar_bloqueio(texto, status_code):
-    if status_code in [403, 429, 503]:
-        return f"HTTP {status_code} — acesso bloqueado"
-    if texto:
-        for palavra in PALAVRAS_BLOQUEIO:
-            if palavra in texto:
-                return f"Bloqueio detectado: '{palavra}'"
-        if len(texto.strip()) < 200:
-            return f"Página suspeita (muito curta: {len(texto)} caracteres)"
-    return None
 
 # =========================
 # INICIAR
 # =========================
 
 print("🌐 Iniciando monitor...")
-enviar(f"🤖 Monitor iniciado!\n🔗 {URL}")
+enviar(f"🤖 Monitor iniciado! Monitorando a cada {INTERVALO_MIN}~{INTERVALO_MAX}s\n🔗 {URL}")
 
-texto_inicial, status = buscar_pagina()
-
-if texto_inicial:
-    status_anterior = checar_disponibilidade(texto_inicial)
-else:
-    status_anterior = "incerto"
-
-print(f"✅ Status inicial: {status_anterior.upper()}")
-enviar(f"Status atual: {status_anterior.upper()}")
+status_anterior = None
+bloqueios_consecutivos = 0
 
 # =========================
 # LOOP PRINCIPAL
@@ -148,29 +109,28 @@ enviar(f"Status atual: {status_anterior.upper()}")
 
 while True:
     try:
-        # Intervalo aleatório para parecer mais humano
         espera = random.uniform(INTERVALO_MIN, INTERVALO_MAX)
-        print(f"⏳ Aguardando {espera:.0f}s...")
         time.sleep(espera)
 
         texto_atual, status_code = buscar_pagina()
 
+        # Falha na requisição
         if texto_atual is None:
-            print(f"[{time.strftime('%H:%M:%S')}] Falha ao buscar página, tentando novamente...")
+            print(f"[{time.strftime('%H:%M:%S')}] Falha ao buscar, tentando novamente...")
             continue
 
-        # --- Checa bloqueio ---
-        bloqueio = verificar_bloqueio(texto_atual, status_code)
-        if bloqueio:
-            print(f"🚫 [{time.strftime('%H:%M:%S')}] {bloqueio}")
-            espera_bloqueio = random.uniform(300, 600)  # 5 a 10 min aleatório
-            enviar(
-                f"🚫 MONITOR BLOQUEADO!\n"
-                f"Motivo: {bloqueio}\n"
-                f"Aguardando {espera_bloqueio/60:.0f} minutos antes de tentar novamente..."
-            )
+        # --- Checa bloqueio 403/429 ---
+        if status_code in [403, 429, 503]:
+            bloqueios_consecutivos += 1
+            espera_bloqueio = min(300 * bloqueios_consecutivos, 1800)  # máx 30 min
+            print(f"🚫 [{time.strftime('%H:%M:%S')}] HTTP {status_code} — aguardando {espera_bloqueio//60} min...")
+            if bloqueios_consecutivos == 1:
+                enviar(f"🚫 IP bloqueado (HTTP {status_code}). Aguardando {espera_bloqueio//60} min...")
             time.sleep(espera_bloqueio)
             continue
+
+        # Reset contador de bloqueios se a requisição passou
+        bloqueios_consecutivos = 0
 
         # --- Analisa disponibilidade ---
         status_atual = checar_disponibilidade(texto_atual)
@@ -188,15 +148,13 @@ while True:
 
         # 😔 Voltou a esgotar
         elif status_atual == "esgotado" and status_anterior == "disponivel":
-            enviar("😔 Ingressos esgotaram novamente. Continuando monitoramento...")
+            enviar("😔 Ingressos esgotaram. Continuando monitoramento...")
 
-        # ⚠️ Status incerto
-        elif status_atual == "incerto":
-            print("⚠️  Status incerto — verificando na próxima rodada.")
-
-        status_anterior = status_atual
+        # Atualiza status anterior apenas se não for incerto
+        # (não substitui o último status válido)
+        if status_atual != "incerto":
+            status_anterior = status_atual
 
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] Erro: {e}")
-        enviar(f"⚠️ Erro no monitor: {e}\nTentando continuar...")
         time.sleep(30)
